@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import resnet18, resnet101, vgg11
-
+from torchsummary import summary
+import torchvision
 
 class ConvBlock(nn.Module):
     """Convolution block used in CNN."""
@@ -195,18 +196,41 @@ class CNN_LSTM(nn.Module):
                  cnn_bn=False, 
                  bidirectional=False, 
                  attention=False,
-                 device="cuda"):
+                 device="cuda",
+                 use_2d_kps=False,
+                 use_3d_kps = False,
+                 use_img_feats = False):
         
         super(CNN_LSTM, self).__init__()
 
         self.attention = attention
+        
+        self.use_2d_kps = use_2d_kps
+        self.use_3d_kps = use_3d_kps
+        self.use_img_feats = use_img_feats
 
-        self.encoder = CNN_Encoder(latent_size, 
-                                   n_cnn_layers, 
-                                   intermediate_act_fn=cnn_act_fn, 
-                                   use_batchnorm=cnn_bn, 
-                                   channel_in=channel_in)
-        self.decoder = LSTM_Decoder(latent_size, 
+        self.num_2d_keypoints = 17
+        self.num_3d_keypoints = 145
+        
+        if use_img_feats:
+            lstm_latent_size = latent_size
+        else:
+            lstm_latent_size = 0
+            
+        if self.use_2d_kps:
+            lstm_latent_size +=  3 * self.num_2d_keypoints
+        if self.use_3d_kps:
+            lstm_latent_size +=  3 * self.num_3d_keypoints
+
+        if use_img_feats:
+            self.encoder = CNN_Encoder(latent_size, 
+                                    n_cnn_layers, 
+                                    intermediate_act_fn=cnn_act_fn, 
+                                    use_batchnorm=cnn_bn, 
+                                    channel_in=channel_in)
+        else:
+            self.encoder = None
+        self.decoder = LSTM_Decoder(lstm_latent_size, 
                                     n_rnn_hidden_dim, 
                                     n_classes, 
                                     n_rnn_layers, 
@@ -214,16 +238,61 @@ class CNN_LSTM(nn.Module):
                                     bidirectional=bidirectional, 
                                     attention=attention,
                                     device=device)
+        self.device = device
+
+        if use_2d_kps:
+            self.rcnn_keypoints_model = torchvision.models.detection.keypointrcnn_resnet50_fpn(pretrained=True)
+            self.rcnn_keypoints_model.eval()
+            self.rcnn_keypoints_model.to(device)
+
+            ## freeze keypoint RCNN all parameters
+            for param in self.rcnn_keypoints_model.parameters():
+                param.requires_grad = False
+
 
         self.dropout = nn.Dropout(p=dropout_rate)
 
     def forward(self, x):
-        batch_size, timesteps, C, H, W = x.size()
+        # print(x.size())  # torch.Size([batch_size, 30, 3, 256, 256])
 
-        cnn_in = x.view(batch_size * timesteps, C, H, W)
-        latent_var = self.encoder(cnn_in)
+        batch_size, timesteps, C, H, W = x.size() # torch.Size([batch_size, 30, 3, 256, 256])
 
-        rnn_in = latent_var.view(batch_size, timesteps, -1)
+        if self.use_img_feats:
+            cnn_in = x.view(batch_size * timesteps, C, H, W)
+            # print(latent_var.size())  # torch.Size([120, 512]
+            latent_var = self.encoder(cnn_in) # torch.Size([120, 512]
+
+            rnn_in = latent_var.view(batch_size, timesteps, -1)
+
+        if self.use_2d_kps:
+            x_reshaped = x.view(-1, C, H, W)
+            #print('x_reshaped.size()', x_reshaped.size())
+            # Use KeypointRCNN for keypoint detection
+            self.rcnn_keypoints_model.eval()
+            if hasattr(self, 'rcnn_keypoints_model'):
+                with torch.no_grad():  # Ensure no gradients are calculated
+                    results = self.rcnn_keypoints_model(x_reshaped)
+                    keypoints_tensors = []
+                    for result in results:
+                        if len(result['scores']) > 0:
+                            max_score_index = result['scores'].argmax()
+                            keypoints = result['keypoints'][max_score_index]  # [num_keypoints, 3]
+                            if keypoints.shape[0] < self.num_2d_keypoints:
+                                pad_size = self.num_2d_keypoints - keypoints.shape[0]
+                                pad = torch.zeros((pad_size, 3), device=keypoints.device)
+                                keypoints = torch.cat([keypoints, pad], dim=0)
+                            keypoints_tensors.append(keypoints)
+                        else:
+                            keypoints_tensors.append(torch.zeros((self.num_2d_keypoints, 3), device=self.device))
+
+                    keypoints_tensor = torch.stack(keypoints_tensors).view(batch_size, timesteps, -1)
+                    if self.use_img_feats:
+                        rnn_in = torch.cat((rnn_in, keypoints_tensor), dim=2)
+                    else:
+                        rnn_in = keypoints_tensor
+
+
+        
         rnn_in = self.dropout(rnn_in)
         out, _ = self.decoder(rnn_in)
 

@@ -48,40 +48,48 @@ class EarlyStopping:
         else:
             return False
 
-def _train_epoch(model, criterion, optimizer, dataloader, device):
+def _train_epoch(epoch, max_epoch, model, criterion, optimizer, dataloader, device, split = 'train', debug=False):
     """Train step within epoch."""
     model.train()
     losses = []
     all_label = []
     all_pred = []
-    
-    with tqdm(dataloader, unit="batch") as tepoch:
-        for inputs, labels in tepoch:
-            # get the inputs and labels
-            inputs, labels = inputs.to(device), labels.to(device)
+    tbar = tqdm(dataloader)
+    width = 6  # Total width including the string length
+    formatted_split = split.rjust(width)
 
-            optimizer.zero_grad()
-            # forward
-            outputs = model(inputs)
-            # outputs = torch.squeeze(outputs, dim=0)
-            if isinstance(outputs, list):
-                outputs = outputs[0]
+    for idx, (inputs, labels) in enumerate(tbar): # 6 ~ 10 s
+        # get the inputs and labels
+        inputs, labels = inputs.to(device), labels.to(device)
+        #print('inputs.shape', inputs.shape)
+        #print('labels.shape', labels.shape)
 
-            # compute the loss
-            loss = criterion(outputs, labels)
-            losses.append(loss.item())
+        optimizer.zero_grad()
+        # forward
+        outputs = model(inputs)
+        # outputs = torch.squeeze(outputs, dim=0)
+        if isinstance(outputs, list):
+            outputs = outputs[0]
 
-            # compute the accuracy
-            prediction = torch.max(outputs, 1)[1]
-            all_label.extend(labels)
-            all_pred.extend(prediction)
-            score = accuracy_score(labels.cpu().data.numpy(), prediction.cpu().data.numpy())
-            
-            # backward & optimize
-            loss.backward()
-            optimizer.step()
+        # compute the loss
+        loss = criterion(outputs, labels)
+        losses.append(loss.item())
 
-            tepoch.set_postfix(loss=loss.item(), accuracy=score)
+        # compute the accuracy
+        prediction = torch.max(outputs, 1)[1]
+        all_label.extend(labels)
+        all_pred.extend(prediction)
+        score = accuracy_score(labels.cpu().data.numpy(), prediction.cpu().data.numpy())
+        
+        # backward & optimize
+        loss.backward()
+        optimizer.step()
+
+        loginfo = f'{formatted_split} Epoch: {epoch:03d}/{max_epoch:03d}, Iter: {idx:05d}/{idx:05d}, Loss: {loss.item():.4f}, Acc: {100*score:.2f}'
+        tbar.set_description(loginfo)
+
+        if debug:
+            break
 
     # Compute the average loss & accuracy
     train_loss = sum(losses)/len(losses)
@@ -91,33 +99,41 @@ def _train_epoch(model, criterion, optimizer, dataloader, device):
 
     return train_loss, train_acc
 
-def _val_epoch(model, criterion, dataloader, device):
+def _val_epoch(epoch, max_epoch, model, criterion, dataloader, device, split = 'val', debug=False):
     """Validation step within epoch."""
     model.eval()
     losses = []
     all_label = []
     all_pred = []
+    tbar = tqdm(dataloader)
+    width = 6  # Total width including the string length
+    formatted_split = split.rjust(width)
 
     with torch.no_grad():
-        with tqdm(dataloader, unit="batch") as tepoch:
-            for inputs, labels in tepoch:
-                # get the inputs and labels
-                inputs, labels = inputs.to(device), labels.to(device)
-                # forward
-                outputs = model(inputs)
-                if isinstance(outputs, list):
-                    outputs = outputs[0]
-                # compute the loss
-                loss = criterion(outputs, labels)
-                losses.append(loss.item())
-                # collect labels & prediction
-                prediction = torch.max(outputs, 1)[1]
-                all_label.extend(labels)
-                all_pred.extend(prediction)
+        for idx, (inputs, labels) in enumerate(tbar): # 6 ~ 10 s
+            # get the inputs and labels
+            inputs, labels = inputs.to(device), labels.to(device)
+            # forward
+            outputs = model(inputs)
+            if isinstance(outputs, list):
+                outputs = outputs[0]
+            # compute the loss
+            loss = criterion(outputs, labels)
+            losses.append(loss.item())
+            # collect labels & prediction
+            prediction = torch.max(outputs, 1)[1]
+            all_label.extend(labels)
+            all_pred.extend(prediction)
 
-                score = accuracy_score(labels.cpu().data.numpy(), prediction.cpu().data.numpy())
+            score = accuracy_score(labels.cpu().data.numpy(), prediction.cpu().data.numpy())
 
-                tepoch.set_postfix(loss=loss.item(), accuracy=score)
+            loginfo = f'{formatted_split} Epoch: {epoch:03d}/{max_epoch:03d}, Iter: {idx:05d}/{idx:05d}, Loss: {loss.item():.4f}, Acc: {100*score:.2f}'
+            tbar.set_description(loginfo)
+
+            if debug:
+                break
+
+
                 
     # Compute the average loss & accuracy
     val_loss = sum(losses)/len(losses)
@@ -127,27 +143,34 @@ def _val_epoch(model, criterion, dataloader, device):
     
     return val_loss, val_acc
 
-def train(model: nn.Module, 
+def save_checkpoint(dict_saved, save_dir, is_best = False):
+    if is_best:
+        torch.save(dict_saved, f"{save_dir}/best_checkpoint.pt")
+    else:
+        torch.save(dict_saved, f"{save_dir}/checkpoint.pt")    
+
+
+def trainval(model: nn.Module, 
           train_loader: DataLoader, 
           val_loader: DataLoader, 
-          no_of_epochs:int, 
+          max_epoch:int, 
           logger,
           writer,
-          save_dir:str=None, 
-          save_checkpoint:bool=False,
-          load_dir:str=None,
-          load_epoch:int=None,
-          load_checkpoint:bool=False,
+          save_weight_dir:str=None, 
           device:str="cuda", 
           patience:int=10, 
           optimizer_lr:int=0.001, 
           weight_decay:int=0, 
-          use_scheduler:bool=False):
+          use_scheduler:bool=False,
+          resume:str=None,
+          fine_tune:bool=False,
+          debug:bool=False,
+          test_loader: DataLoader=None):
     """Train function for model."""
     
     # if save_dir is specified and does not exist, make save_dir directory
-    if save_dir and not os.path.exists(save_dir):
-        os.mkdir(save_dir)
+    if save_weight_dir and not os.path.exists(save_weight_dir):
+        os.mkdir(save_weight_dir)
     
     # move model to device specified
     model.to(device)
@@ -157,26 +180,29 @@ def train(model: nn.Module,
     optimizer = optim.Adam(model.parameters(), lr=optimizer_lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience//3, verbose=True)
 
-    start_epoch = 1
+    start_epoch = 0
 
-    if load_checkpoint and load_dir and load_epoch:
+    if resume is not None:
         # load model from checkpoint
-        checkpoint = torch.load(f"{load_dir}/{load_epoch}-checkpoint.pt")
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
+        checkpoint = torch.load(resume)
+        if not fine_tune:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
     
     logger.info("Training Started".center(60, '#'))
 
     early_stopper = EarlyStopping(patience=patience, logger=logger)
 
     # start training
-    for epoch in range(start_epoch, no_of_epochs+1):
-        logger.info(f"Epoch {epoch}")
+    best_val_acc = float("-inf")
+    best_epoch = None
+    for epoch in range(start_epoch, max_epoch+1):
+        #logger.info(f"Epoch {epoch}")
         
         # train the model
-        train_loss, train_acc = _train_epoch(model, criterion, optimizer, train_loader, device)
+        train_loss, train_acc = _train_epoch(epoch, max_epoch, model, criterion, optimizer, train_loader, device, debug=debug)
 
         # write train loss and acc to logger
         writer.add_scalars('Loss', {'train': train_loss}, epoch)
@@ -184,40 +210,72 @@ def train(model: nn.Module,
         logger.info("Average Training Loss of Epoch {}: {:.6f} | Acc: {:.2f}%".format(epoch, train_loss, train_acc*100))
 
         # validate the model
-        val_loss, val_acc = _val_epoch(model, criterion, val_loader, device)
+        val_loss, val_acc = _val_epoch(epoch, max_epoch, model, criterion, val_loader, device, split='val', debug=debug)
 
         # write val loss and acc to logger
         writer.add_scalars('Loss', {'val': val_loss}, epoch)
         writer.add_scalars('Accuracy', {'val': val_acc}, epoch)
         logger.info("Average Validation Loss of Epoch {}: {:.6f} | Acc: {:.2f}%".format(epoch, val_loss, val_acc*100))
 
-        # save model or checkpoint
-        if save_dir:
-            if save_checkpoint:
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'train_loss': train_loss,
-                    'val_loss': val_loss,
-                    'train_acc': train_acc,
-                    'val_acc': val_acc,
-                }, f"{save_dir}/{epoch}-checkpoint.pt")
-            else:
-                torch.save(model.state_dict(), f"{save_dir}/{epoch}.pt")
-
-        logger.info(f"Epoch {epoch} Model Saved".center(60, '#'))
-
-        # update and check early stopper
-        if early_stopper.stop(val_loss):
-            logger.info("Model has overfit, early stopping...")
-            break
         
         # step scheduler
         if use_scheduler:
             scheduler.step(val_loss)
+        
+        if not test_loader is None and epoch % 20 == 0:
+            test_loss, test_acc = _val_epoch(epoch, max_epoch, model, criterion, test_loader, device, split='test', debug=debug)
+            logger.info("Average Test Loss of Epoch {}: {:.6f} | Acc: {:.2f}%".format(epoch, test_loss, test_acc*100))
 
+        checkpoint_dict = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'val_acc': val_acc,
+        }
+        # save model or checkpoint
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_epoch = epoch
+            save_checkpoint(checkpoint_dict, save_weight_dir, is_best=True)
+            logger.info("Best Epoch: {} | Validation Loss: {:.6f} | Acc: {:.2f}%".format(best_epoch, val_loss, val_acc*100))
+        else:
+            save_checkpoint(checkpoint_dict, save_weight_dir)
+        
+        # update and check early stopper
+        #if early_stopper.stop(val_loss):
+        #    logger.info("Model has overfit, early stopping...")
+        #    break
+        
+        logger.info("")
+        if debug:
+            break
     logger.info("Training Finished".center(60, '#'))
+    logger.info("")
+    logger.info("")
 
     return model
+
+
+
+def test(model: nn.Module, 
+          data_loader: DataLoader, 
+          save_weight_dir:str=None, 
+          device:str="cuda",
+          debug:bool=False,
+          max_epoch:int=999):
+    """Train function for model."""
+    
+    criterion = nn.CrossEntropyLoss()
+    # move model to device specified
+    model.to(device)
+    model.eval()
+
+    dict_saved = torch.load(f"{save_weight_dir}/best_checkpoint.pt")
+    best_epoch = dict_saved['epoch']
+    model.load_state_dict(dict_saved['model_state_dict'])
+    
+
+    # test the model
+    test_loss, test_acc = _val_epoch(best_epoch, max_epoch, model, criterion, data_loader, device, split='test', debug=debug)
+    return test_loss, test_acc
