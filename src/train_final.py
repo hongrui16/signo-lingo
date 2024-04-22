@@ -34,9 +34,9 @@ import argparse
 
 
 # helper classes and functions
-from dev_model.model_fns import trainval, test
-from dev_model.models import CNN_LSTM, VGG_LSTM
-
+from workers import trainval, test
+from network.models import CNN_LSTM, VGG_LSTM
+from dataloader.TurkishDataLoader import Turkish_Dataset
 
 
 class CaptureOutput:
@@ -50,173 +50,7 @@ class CaptureOutput:
         self.captured = self._capture.getvalue()
 
 
-def extract_frames(vid_path, transforms=None, frames_cap=None): 
-    """Extract and transform video frames
 
-    Parameters:
-    vid_path (str): path to video file
-    frames_cap (int): number of frames to extract, evenly spaced
-    transforms (torchvision.transforms, optional): transformations to apply to frame
-
-    Returns:
-    list of numpy.array: vid_arr
-
-    """
-    vid_arr = []
-    try:
-        container = av.open(vid_path)
-    
-        stream = container.streams.video[0]
-        n_frames = stream.frames
-        if frames_cap:
-            remainder = n_frames % frames_cap
-            interval = n_frames // frames_cap
-            take_frame_idx = 0
-            if interval < 1:
-                raise ValueError(f"video with path '{vid_path}' is too short, please make sure that video has >={frames_cap} frames")
-        for frame_no, frame in enumerate(container.decode(stream)):
-            if frames_cap and frame_no != take_frame_idx:
-                continue
-            img = frame.to_image()
-            if transforms:
-                img = transforms(img)
-            vid_arr.append(np.array(img))
-            if frames_cap:
-                if remainder > 0:
-                    take_frame_idx += 1
-                    remainder -= 1
-                take_frame_idx += interval
-
-        return vid_arr
-    except av.error.InvalidDataError as e:
-        # print("Invalid data found when processing input:", e)
-        return None
-
-
-def extract_frames_by_cv2(vid_path, transforms=None, frames_cap=None):
-    """Extract and transform video frames using OpenCV.
-
-    Parameters:
-    vid_path (str): path to video file
-    frames_cap (int): number of frames to extract, evenly spaced
-    transforms (callable, optional): function to apply transformations to frame
-
-    Returns:
-    list of numpy.array: vid_arr
-
-    """
-    vid_arr = []
-    cap = cv2.VideoCapture(vid_path)
-    
-    if not cap.isOpened():
-        # print(f"Failed to open video file {vid_path}")
-        return None
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    if frames_cap:
-        interval = max(1, total_frames // frames_cap)
-        frames_to_capture = [i * interval for i in range(frames_cap)]
-    
-    frame_idx = 0
-    valid_frame_cnt = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            success = False
-            break
-        
-
-        
-        if frames_cap:
-            if frame_idx in frames_to_capture:
-                valid_frame_cnt += 1
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                if transforms:
-                    frame = Image.fromarray(frame)
-                    frame = transforms(frame)
-                    frame = frame.numpy()
-                vid_arr.append(frame)
-
-                if valid_frame_cnt >= frames_cap:
-                    success = True
-                    break
-        else:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            if transforms:
-                frame = Image.fromarray(frame)
-                frame = transforms(frame)
-                frame = frame.numpy()
-            vid_arr.append(frame)
-
-        frame_idx += 1
-
-    cap.release()
-    if success:
-        return vid_arr
-    else:
-        return None
-    
-
-
-
-"""
-# Custom Dataset
-"""
-
-class Turkish_Dataset(Dataset):
-    """Custom dataset class for AUTSL Dataset."""
-    
-    def __init__(self, df, data_dir, n_classes, file_ext=".mp4", transforms=None, frames_cap=None):
-        
-        self.df = df
-        self.frames_cap = frames_cap
-        self.transforms = transforms
-        self.file_ext = file_ext
-        self.data_dir = data_dir
-        self.n_classes = n_classes
-        self.num = len(self.df)
-    
-    def __getitem__(self, index):
-
-        while True:            
-            vid_name = self.df.iloc[index, 0]
-            vid_label = self.df.iloc[index, 1]
-            
-            vid_color = f"{self.data_dir}/{vid_name}_color{self.file_ext}"
-
-            # get videos
-            # rgb_arr = extract_frames(vid_color, transforms=self.transforms, frames_cap=self.frames_cap)
-            rgb_arr = extract_frames_by_cv2(vid_color, transforms=self.transforms, frames_cap=self.frames_cap)
-            
-            if not rgb_arr is None:
-                break
-            else:
-                index = np.random.randint(0, self.num)
-
-        vid_arr = np.array(rgb_arr)
-
-        vid_arr = vid_arr / 255
-        
-        # create one-hot-encoding for label
-        label = np.zeros(self.n_classes)
-        label[vid_label] = 1
-        
-        # convert arr to tensors
-        vid_arr = torch.from_numpy(vid_arr).float()
-        label = torch.from_numpy(label).long().argmax()
-        
-        # return masked video array and label
-        return vid_arr, label
-    
-    def __len__(self):
-        return len(self.df)
-
-
-transforms_compose = transforms.Compose([transforms.Resize(256), 
-                                         transforms.ToTensor(),
-                                         transforms.Normalize(mean=[0.5], std=[0.5])])
 
 
 
@@ -231,6 +65,11 @@ def main(args):
     num_workers = args.num_workers
     max_epoch = args.max_epoch
     use_img_feats = args.use_img_feats
+    input_size = args.input_size
+    hd_size = args.hd_size
+    model_name = args.model_name
+    n_frames = args.n_frames
+    
 
     log_dir = os.path.join(log_dir, "cnnlstm_{:%Y-%m-%d_%H-%M-%S}".format(datetime.now()))
     os.makedirs(log_dir, exist_ok=True)
@@ -243,7 +82,7 @@ def main(args):
     # Log to file & tensorboard writer
     logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[logging.FileHandler(log_path), logging.StreamHandler()])
     logger = logging.getLogger('signo-lingo')
-    logging.info(f"Logging to {log_path}")
+    logging.info(f"Logging to {log_dir}")
 
     ## print all the args into log file
     kwargs = vars(args)
@@ -272,12 +111,20 @@ def main(args):
 
 
     # create train dataset
-    n_frames = 30
-    ld_train = Turkish_Dataset(train_label_df, train_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames)
+    transforms_compose = transforms.Compose([
+                                         #transforms.Resize(256), 
+                                         transforms.ToTensor(),
+                                        #  transforms.Normalize(mean=[0.5], std=[0.5]),
+                                         ])
+    transforms_compose = None
+    
+    ld_train = Turkish_Dataset(train_label_df, train_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
     print("shape of first array", ld_train[0][0].shape)
 
     # show image but clip rbg values
     img_np_arr = ld_train[0][0][0].numpy()
+    print(f'img_np_arr min: {img_np_arr.min()}, img_np_arr max: {img_np_arr.max()}') # min: 0.0, img_np_arr max: 0.003921568859368563
+
     img_np_arr -= img_np_arr.min() 
     img_np_arr /= img_np_arr.max()
 
@@ -287,8 +134,8 @@ def main(args):
     plt.savefig(plot_path)
 
     # create test dataset
-    ld_test = Turkish_Dataset(test_label_df, test_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames)
-    print("shape of first array", ld_test[0][0].shape)
+    ld_test = Turkish_Dataset(test_label_df, test_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
+    # print("shape of first array", ld_test[0][0].shape)
 
     # show image but clip rbg values
     img_np_arr = ld_test[0][0][0].numpy()
@@ -301,8 +148,8 @@ def main(args):
 
 
     # create val dataset
-    ld_val = Turkish_Dataset(val_label_df, val_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames)
-    print("shape of first array", ld_val[0][0].shape)
+    ld_val = Turkish_Dataset(val_label_df, val_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
+    # print("shape of first array", ld_val[0][0].shape)
 
     # show image but clip rbg values
     img_np_arr = ld_val[0][0][0].numpy()
@@ -331,21 +178,37 @@ def main(args):
     """
 
     # create model
-    model = CNN_LSTM(n_classes, 
+    if model_name == 'vgglstm':
+        model = VGG_LSTM(n_classes, 
                     latent_size=512, 
-                    n_cnn_layers=6, 
                     n_rnn_layers=1, 
                     n_rnn_hidden_dim=512, 
-                    cnn_bn=True, 
                     bidirectional=True, 
                     dropout_rate=0.8, 
-                    attention=True,
                     use_2d_kps=use_2d_kps,
                     use_3d_kps=use_3d_kps,
-                    use_img_feats=use_img_feats)
+                    use_img_feats=use_img_feats,
+                    input_size=input_size)
+        
+    elif model_name == 'cnnlstm':
+        model = CNN_LSTM(n_classes, 
+                        latent_size=512, 
+                        n_cnn_layers=6, 
+                        n_rnn_layers=1, 
+                        n_rnn_hidden_dim=512, 
+                        cnn_bn=True, 
+                        bidirectional=True, 
+                        dropout_rate=0.8, 
+                        attention=True,
+                        use_2d_kps=use_2d_kps,
+                        use_3d_kps=use_3d_kps,
+                        use_img_feats=use_img_feats,
+                        input_size=input_size)
+    else:
+        raise ValueError("Model name not supported")
     
     with CaptureOutput() as capturer:
-        summary(model.cuda(), input_size=(30, 3, 256, 256))
+        summary(model.cuda(), input_size=(n_frames, 3, 256, 256))
     logger.info(capturer.captured)
 
     # if multiple GPUs are available, wrap model with DataParallel 
@@ -355,7 +218,7 @@ def main(args):
 
     # hyperparams
     optimizer_lr = 1e-5
-
+    logger.info(f"******************* Training {model_name} *******************")
     # train model
     trainval(model, 
         train_loader, 
@@ -390,8 +253,12 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=16, help='batch size')
     parser.add_argument('--debug', action='store_true', help='debug mode')
     parser.add_argument('--num_workers', type=int, default=6, help='number of workers for dataloader')
-    parser.add_argument('--max_epoch', type=int, default=500, help='maximum number of epochs')
+    parser.add_argument('--max_epoch', type=int, default=150, help='maximum number of epochs')
     parser.add_argument('--use_img_feats', action='store_true', help='use image features')
+    parser.add_argument('--input_size', type=int, default=256, help='input size of image')
+    parser.add_argument('--hd_size', type=int, default=720, help='high resolution size')
+    parser.add_argument('--model_name', type=str, default='cnnlstm', help='model name')
+    parser.add_argument('--n_frames', type=int, default=30, help='number of frames in a sequence for training')
 
     args = parser.parse_args()
     main(args)

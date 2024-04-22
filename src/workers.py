@@ -61,15 +61,18 @@ def _train_epoch(epoch, max_epoch, model, criterion, optimizer, dataloader, devi
     for idx, (inputs, labels) in enumerate(tbar): # 6 ~ 10 s
         # get the inputs and labels
         inputs, labels = inputs.to(device), labels.to(device)
-        #print('inputs.shape', inputs.shape)
-        #print('labels.shape', labels.shape)
+        
+        # print('inputs.shape', inputs.shape) # torch.Size([16, 30, 3, 720, 720])
+        # print('labels.shape', labels.shape) # torch.Size([16])
 
         optimizer.zero_grad()
         # forward
         outputs = model(inputs)
         # outputs = torch.squeeze(outputs, dim=0)
+        # print('outputs.shape', outputs.shape) #  torch.Size([16, 10])
         if isinstance(outputs, list):
             outputs = outputs[0]
+        # print('outputs.shape', outputs.shape) # torch.Size([16, 10])
 
         # compute the loss
         loss = criterion(outputs, labels)
@@ -181,6 +184,8 @@ def trainval(model: nn.Module,
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience//3, verbose=True)
 
     start_epoch = 0
+    best_val_acc = float("-inf")
+    best_epoch = None
 
     if resume is not None:
         # load model from checkpoint
@@ -190,14 +195,15 @@ def trainval(model: nn.Module,
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             start_epoch = checkpoint['epoch'] + 1
+            best_val_acc = checkpoint['val_acc']
+            if 'best_epoch' in checkpoint:
+                best_epoch = checkpoint['best_epoch']
     
     logger.info("Training Started".center(60, '#'))
 
     early_stopper = EarlyStopping(patience=patience, logger=logger)
 
     # start training
-    best_val_acc = float("-inf")
-    best_epoch = None
     for epoch in range(start_epoch, max_epoch+1):
         #logger.info(f"Epoch {epoch}")
         
@@ -232,6 +238,8 @@ def trainval(model: nn.Module,
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
             'val_acc': val_acc,
+            'best_epoch': best_epoch
+
         }
         # save model or checkpoint
         if val_acc > best_val_acc:
@@ -250,6 +258,7 @@ def trainval(model: nn.Module,
         logger.info("")
         if debug:
             break
+        
     logger.info("Training Finished".center(60, '#'))
     logger.info("")
     logger.info("")
