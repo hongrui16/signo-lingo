@@ -35,7 +35,7 @@ import argparse
 
 # helper classes and functions
 from workers import trainval, test
-from network.models import CNN_LSTM, VGG_LSTM
+from network.network import SLR_network
 from dataloader.TurkishDataLoader import Turkish_Dataset
 
 
@@ -56,26 +56,26 @@ class CaptureOutput:
 
 def main(args):
     log_dir =  args.log_dir
-    use_2d_kps = args.use_2d_kps
-    use_3d_kps = args.use_3d_kps
+    # use_2d_kps = args.use_2d_kps
+    # use_3d_kps = args.use_3d_kps
+    # use_img_feats = args.use_img_feats
     resume = args.resume
     fine_tune = args.fine_tune
     debug = args.debug
     batch_size = args.batch_size
     num_workers = args.num_workers
     max_epoch = args.max_epoch
-    use_img_feats = args.use_img_feats
+
     input_size = args.input_size
     hd_size = args.hd_size
     model_name = args.model_name
     n_frames = args.n_frames
+    encoder_types = args.encoder_types.split(',')
+    decoder_types = args.decoder_types.split(',')
     
 
-    log_dir = os.path.join(log_dir, "cnnlstm_{:%Y-%m-%d_%H-%M-%S}".format(datetime.now()))
+    log_dir = os.path.join(log_dir, "{}_{:%Y-%m-%d_%H-%M-%S}".format(model_name, datetime.now()))
     os.makedirs(log_dir, exist_ok=True)
-
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     log_path = os.path.join(log_dir, "info.log")
     
@@ -173,36 +173,24 @@ def main(args):
     test_loader = DataLoader(ld_test, batch_size = bs_test, shuffle = False, num_workers = num_workers)
     val_loader = DataLoader(ld_val, batch_size = bs_val, shuffle = False, num_workers = num_workers)
 
+
+    
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        logger.info("Using GPU")
+    else:
+        device = torch.device('cpu')
+        logger.info("Using CPU")
+      
+
     """
     # Train Final Model
     """
-
-    # create model
-    if model_name == 'vgglstm':
-        model = VGG_LSTM(n_classes, 
-                    latent_size=512, 
-                    n_rnn_layers=1, 
-                    n_rnn_hidden_dim=512, 
-                    bidirectional=True, 
-                    dropout_rate=0.8, 
-                    use_2d_kps=use_2d_kps,
-                    use_3d_kps=use_3d_kps,
-                    use_img_feats=use_img_feats,
-                    input_size=input_size)
-        
-    elif model_name == 'cnnlstm':
-        model = CNN_LSTM(n_classes, 
-                        latent_size=512, 
-                        n_cnn_layers=6, 
-                        n_rnn_layers=1, 
-                        n_rnn_hidden_dim=512, 
-                        cnn_bn=True, 
-                        bidirectional=True, 
-                        dropout_rate=0.8, 
-                        attention=True,
-                        use_2d_kps=use_2d_kps,
-                        use_3d_kps=use_3d_kps,
-                        use_img_feats=use_img_feats,
+    if model_name == 'SLR_network':
+        model = SLR_network(n_classes, 
+                        device = device,
+                        encoder_types = encoder_types, #['2D_kpts', '3D_kpts', 'img_feats'],
+                        decoder_types = decoder_types, #['TransformerDecoder', 'LSTM'],
                         input_size=input_size)
     else:
         raise ValueError("Model name not supported")
@@ -217,7 +205,7 @@ def main(args):
         model = nn.DataParallel(model)
 
     # hyperparams
-    optimizer_lr = 1e-5
+    optimizer_lr = 1e-4
     logger.info(f"******************* Training {model_name} *******************")
     # train model
     trainval(model, 
@@ -244,21 +232,24 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Train CNN-LSTM model on AUTSL dataset')
+    parser = argparse.ArgumentParser(description='Train model on AUTSL dataset')
     parser.add_argument('--log_dir', type=str, default='logs', help='directory to save logs')
-    parser.add_argument('--use_2d_kps', action='store_true', help='use 2D keypoints')
-    parser.add_argument('--use_3d_kps', action='store_true', help='use 3D keypoints')
+    # parser.add_argument('--use_2d_kps', action='store_true', help='use 2D keypoints')
+    # parser.add_argument('--use_3d_kps', action='store_true', help='use 3D keypoints')
+    # parser.add_argument('--use_img_feats', action='store_true', help='use image features')
+
     parser.add_argument('--resume', type=str, default=None, help='path to checkpoint to resume training')
     parser.add_argument('--fine_tune', action='store_true', help='fine tune model')
     parser.add_argument('--batch_size', type=int, default=16, help='batch size')
     parser.add_argument('--debug', action='store_true', help='debug mode')
     parser.add_argument('--num_workers', type=int, default=6, help='number of workers for dataloader')
     parser.add_argument('--max_epoch', type=int, default=150, help='maximum number of epochs')
-    parser.add_argument('--use_img_feats', action='store_true', help='use image features')
     parser.add_argument('--input_size', type=int, default=256, help='input size of image')
     parser.add_argument('--hd_size', type=int, default=720, help='high resolution size')
-    parser.add_argument('--model_name', type=str, default='cnnlstm', help='model name')
+    parser.add_argument('--model_name', type=str, default='SLR_network', help='model name')
     parser.add_argument('--n_frames', type=int, default=30, help='number of frames in a sequence for training')
+    parser.add_argument('--encoder_types', type=str, default='3D_kpts', help='encoder types, separated by comma')
+    parser.add_argument('--decoder_types', type=str, default='TransformerDecoder', help='decoder types, separated by comma')
 
     args = parser.parse_args()
     main(args)

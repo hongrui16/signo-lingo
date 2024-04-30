@@ -181,7 +181,7 @@ def trainval(model: nn.Module,
     # initialise loss function and optimizers
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=optimizer_lr, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience//3, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience//3)
 
     start_epoch = 0
     best_val_acc = float("-inf")
