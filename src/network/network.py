@@ -24,6 +24,7 @@ class SLR_network(nn.Module):
                  encoder_types = None,
                  decoder_types = None,
                  body_detector = 'rcnn',
+                 trans_num_layers = 4,
                  input_size = 256):
         
         super(SLR_network, self).__init__()
@@ -94,6 +95,7 @@ class SLR_network(nn.Module):
                                             n_classes,
                                             encoder_ouput_channel, 
                                             nhead,
+                                            num_layers = trans_num_layers,
                                             device=device)
             
 
@@ -101,12 +103,14 @@ class SLR_network(nn.Module):
                 self.decoder = TransformerFull(
                                             n_classes,
                                             encoder_ouput_channel, 
+                                            num_layers = trans_num_layers,
                                             device=device)
 
             if decoder_name == 'TransformerEncoderCls':
                 self.decoder = TransformerEncoderCls(
                                             n_classes,
                                             encoder_ouput_channel, 
+                                            num_layers = trans_num_layers,
                                             device=device)
                 
             if decoder_name == 'LSTM':

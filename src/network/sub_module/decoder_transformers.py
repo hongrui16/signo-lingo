@@ -95,7 +95,9 @@ class TransformerFull(nn.Module):
         # Create a dummy target sequence for decoder
         tgt = torch.zeros_like(x, device= self.device)
         output = self.transformer(x, tgt)
-        output = output.mean(dim=0)  # Aggregate across the sequence
+        # output = output.mean(dim=0)  # Aggregate across the sequence
+        output = output[-1, :, :]  # 假设使用最后一个输出作为分类依据
+
         cls = self.fc_out(output)
         return cls, output
 
@@ -126,7 +128,9 @@ class TransformerEncoderCls(nn.Module):
         x = self.pos_encoder(x)
         # Create a dummy target sequence for decoder
         output = self.transformer_encoder(x)
-        output = output.mean(dim=0)  # Aggregate across the sequence
+        # output = output.mean(dim=0)  # Aggregate across the sequence
+        output = output[-1, :, :]  # 假设使用最后一个输出作为分类依据
+
         cls = self.fc_out(output)
         return cls, output
     

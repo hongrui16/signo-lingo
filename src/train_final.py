@@ -85,10 +85,11 @@ def main(args):
     logging.info(f"Logging to {log_dir}")
 
     ## print all the args into log file
+    logging.info(f"<<<<<<<<<<<<<<<<***************hyperparameters***********************************************")
     kwargs = vars(args)
     for key, value in kwargs.items():
         logger.info(f"{key}: {value}")
-    
+    logging.info(f"*******************************hyperparameters*******************************>>>>>>>>>>>>>>>>>")
     
     writer = SummaryWriter(log_dir)
 
@@ -107,7 +108,7 @@ def main(args):
 
     total_label = pd.read_csv(f'{filtered_data}/filtered_ClassId.csv')
     n_classes = len(total_label['ClassId'].unique())
-    print("total unique label:", n_classes)
+    logging.info(f"total unique label: {n_classes}")
 
 
     # create train dataset
@@ -118,53 +119,42 @@ def main(args):
                                          ])
     transforms_compose = None
     
-    ld_train = Turkish_Dataset(train_label_df, train_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
-    print("shape of first array", ld_train[0][0].shape)
+    logging.info(f"Creating Dataset")
+    if args.dataset_name == 'AUTSL':
+        ld_train = Turkish_Dataset(train_label_df, train_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
+        logging.info(f"shape of first array: {ld_train[0][0].shape}")
 
-    # show image but clip rbg values
-    img_np_arr = ld_train[0][0][0].numpy()
-    print(f'img_np_arr min: {img_np_arr.min()}, img_np_arr max: {img_np_arr.max()}') # min: 0.0, img_np_arr max: 0.003921568859368563
+        # show image but clip rbg values
+        img_np_arr = ld_train[0][0][0].numpy()
+        # print(f'img_np_arr min: {img_np_arr.min()}, img_np_arr max: {img_np_arr.max()}') # min: 0.0, img_np_arr max: 0.003921568859368563
+        img_np_arr -= img_np_arr.min() 
+        img_np_arr /= img_np_arr.max()
 
-    img_np_arr -= img_np_arr.min() 
-    img_np_arr /= img_np_arr.max()
+        plt.imshow(img_np_arr.transpose(1, 2, 0))
+        # plt.show()
+        plot_path = os.path.join(log_dir, "train_30_0.png")
+        plt.savefig(plot_path)
 
-    plt.imshow(img_np_arr.transpose(1, 2, 0))
-    # plt.show()
-    plot_path = os.path.join(log_dir, "train_30_0.png")
-    plt.savefig(plot_path)
-
-    # create test dataset
-    ld_test = Turkish_Dataset(test_label_df, test_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
-    # print("shape of first array", ld_test[0][0].shape)
-
-    # show image but clip rbg values
-    img_np_arr = ld_test[0][0][0].numpy()
-    img_np_arr -= img_np_arr.min() 
-    img_np_arr /= img_np_arr.max()
-    plt.imshow(img_np_arr.transpose(1, 2, 0))
-    # plt.show()
-    plot_path = os.path.join(log_dir, "test_30_0.png")
-    plt.savefig(plot_path)
+        # create test dataset
+        ld_test = Turkish_Dataset(test_label_df, test_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
+        # print("shape of first array", ld_test[0][0].shape)
 
 
-    # create val dataset
-    ld_val = Turkish_Dataset(val_label_df, val_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
-    # print("shape of first array", ld_val[0][0].shape)
+        # create val dataset
+        ld_val = Turkish_Dataset(val_label_df, val_dir, n_classes, transforms=transforms_compose, frames_cap=n_frames, hd_size=hd_size)
+        # print("shape of first array", ld_val[0][0].shape)
+    elif args.dataset_name == 'WLASL':
+        pass
 
-    # show image but clip rbg values
-    img_np_arr = ld_val[0][0][0].numpy()
-    img_np_arr -= img_np_arr.min() 
-    img_np_arr /= img_np_arr.max()
-    plt.imshow(img_np_arr.transpose(1, 2, 0))
-    # plt.show()
-    plot_path = os.path.join(log_dir, "val_30_0.png")
-    plt.savefig(plot_path)
+    else:
+        raise ValueError("Dataset not supported")
+
 
     # 
     """
     # Custom Dataloader
     """
-
+    logging.info("Creating Dataloaders")
     # create all dataloaders
     bs_train = batch_size
     bs_test = batch_size
@@ -191,6 +181,7 @@ def main(args):
                         device = device,
                         encoder_types = encoder_types, #['2D_kpts', '3D_kpts', 'img_feats'],
                         decoder_types = decoder_types, #['TransformerDecoder', 'LSTM'],
+                        trans_num_layers = args.trans_num_layers,
                         input_size=input_size)
     else:
         raise ValueError("Model name not supported")
@@ -243,13 +234,15 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=16, help='batch size')
     parser.add_argument('--debug', action='store_true', help='debug mode')
     parser.add_argument('--num_workers', type=int, default=6, help='number of workers for dataloader')
-    parser.add_argument('--max_epoch', type=int, default=150, help='maximum number of epochs')
+    parser.add_argument('--max_epoch', type=int, default=55, help='maximum number of epochs')
     parser.add_argument('--input_size', type=int, default=256, help='input size of image')
     parser.add_argument('--hd_size', type=int, default=720, help='high resolution size')
     parser.add_argument('--model_name', type=str, default='SLR_network', help='model name')
     parser.add_argument('--n_frames', type=int, default=30, help='number of frames in a sequence for training')
     parser.add_argument('--encoder_types', type=str, default='3D_kpts', help='encoder types, separated by comma')
     parser.add_argument('--decoder_types', type=str, default='TransformerDecoder', help='decoder types, separated by comma')
+    parser.add_argument('--trans_num_layers', type=int, default=4, help='number of layers in transformer encoder or decoder')
+    parser.add_argument('--dataset_name', type=str, default='AUTSL', help='dataset name')
 
     args = parser.parse_args()
     main(args)

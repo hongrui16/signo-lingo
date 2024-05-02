@@ -178,6 +178,14 @@ class Turkish_Dataset(Dataset):
         self.n_classes = n_classes
         self.num = len(self.df)
         self.hd_size = hd_size
+
+        ### check if the data directory is empty
+        if not os.listdir(data_dir):
+            raise ValueError(f"Data directory '{data_dir}' is empty")
+
+        ## check if the data directory has no video files
+        if not any(file.endswith(file_ext) for file in os.listdir(data_dir)):
+            raise ValueError(f"Data directory '{data_dir}' has no video files")
     
     def __getitem__(self, index):
 
