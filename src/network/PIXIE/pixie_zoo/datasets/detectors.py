@@ -86,24 +86,28 @@ class FasterRCNN(object):
         '''
         input: 
             The input to the model is expected to be a list of tensors, 
-            each of shape [C, H, W], one for each image, and should be in 0-1 range. 
+            each of shape [bs, C, H, W], one for each image, and should be in 0-1 range. 
             Different images can have different sizes.
         return: 
             detected box, [x1, y1, x2, y2]
         '''
         prediction = self.model(input.to(self.device))
         bbox_list = []
+        c, h, w = input[0].shape
         for pred in prediction:
+            # print('pred', pred)
             # 逻辑与操作来筛选标签为1且得分大于0.5的检测框
-            inds = (pred['labels'] == 1) & (pred['scores'] > 0.5)
+            inds = (pred['labels'] == 1) & (pred['scores'] > 0.6)
             if inds.sum() == 0:
                 # 添加全零的边界框作为占位符
-                bbox = np.zeros(4)
+                # bbox = np.zeros(4)
+                bbox = np.array([0, 0, w-1, h-1])
             else:
                 # 使用非零索引获取第一个符合条件的框
                 first_true_ind = inds.nonzero(as_tuple=True)[0][0]
                 bbox = pred['boxes'][first_true_ind].cpu().numpy()
             bbox_list.append(bbox)
+        # print('bbox_list', bbox_list)
         return np.array(bbox_list)
 
 

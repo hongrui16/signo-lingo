@@ -52,7 +52,10 @@ def crop_resize_image(image, bbox, scale, target_size):
 
 def crop_resize_image_batch(image, bbox, scale, target_size):
     bs, c, h, w = image.shape
-    new_bbox = bbox.clone()  # 避免修改原始bbox
+    
+    # 避免修改原始bbox, convert to float
+    new_bbox = bbox.clone().float()
+    
 
     # 缩放bbox
     bbox_width = new_bbox[:, 2] - new_bbox[:, 0]

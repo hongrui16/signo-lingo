@@ -10,12 +10,12 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-from network.sub_module.encoder_CNN import CNN_Encoder
-from network.sub_module.encoder_2D_kpts import Encoder_2D_kpts
-from network.sub_module.encoder_3D_kpts import Encoder_3D_kpts
+from network.sub_module.stage1_CNN import CNN_Encoder
+from network.sub_module.stage1_2D_kpts import Compute_2D_kpts
+from network.sub_module.stage1_3D_kpts import Compute_3D_kpts
 
-from network.sub_module.decoder_transformers import TransformerDecoder, TransformerFull, TransformerEncoderCls
-from network.sub_module.decoder_RNNs import LSTM_Decoder, GRU_Decoder, RNN_Decoder
+from network.sub_module.stage2_transformers import TransformerDecoder, TransformerFull, TransformerEncoderCls
+from network.sub_module.stage2_RNNs import LSTM_Decoder, GRU_Decoder, RNN_Decoder
 
 class SLR_network(nn.Module):
     def __init__(self, 
@@ -24,11 +24,13 @@ class SLR_network(nn.Module):
                  encoder_types = None,
                  decoder_types = None,
                  body_detector = 'rcnn',
-                 trans_num_layers = 4,
-                 input_size = 256):
+                 trans_num_layers = 4,                 
+                 input_size = 256,
+                 args = None):
         
         super(SLR_network, self).__init__()
 
+        self.args = args
         channel_in=3
         cnn_act_fn="relu"
         rnn_act_fn="relu"
@@ -38,7 +40,6 @@ class SLR_network(nn.Module):
         n_rnn_hidden_dim=512
         cnn_bn=True
         bidirectional=True
-        dropout_rate=0.8
         attention=True
 
         self.device = device
@@ -53,9 +54,18 @@ class SLR_network(nn.Module):
         if encoder_types is None:
             raise ValueError("Please provide encoder types")
         encoder_list = ['CNN', '2D_kpts', '3D_kpts'] 
-        for encoder_name in encoder_types:
-            assert encoder_name in encoder_list , f"encoder_name should be one of {encoder_list}"
-            if encoder_name == 'CNN':
+
+        self.encoder = None
+        if args.load_3D_kpts:
+            encoder_ouput_channel += 87 * 3 ## 3D keypoints
+            
+        if args.load_2D_kpts:
+            encoder_ouput_channel += 17*2 ## 2D keypoints
+        
+        if args.load_frame:
+            for encoder_name in encoder_types:
+                assert encoder_name in encoder_list , f"encoder_name should be one of {encoder_list}"
+            if 'CNN' in encoder_types:
                 self.encoder = CNN_Encoder(
                                         n_layers = n_cnn_layers, 
                                         intermediate_act_fn=cnn_act_fn, 
@@ -66,15 +76,15 @@ class SLR_network(nn.Module):
             else:
                 self.use_img_feats = False
 
-            if encoder_name == '2D_kpts':
-                self.encoder_2d_kps = Encoder_2D_kpts(freeze_weights=True, load_pretrained = True, device=device)
+            if '2D_kpts' in encoder_types:
+                self.encoder_2d_kps = Compute_2D_kpts(freeze_weights=True, load_pretrained = True, device=device)
                 encoder_ouput_channel +=  3 * self.encoder_2d_kps.num_2d_keypoints
                 self.use_2d_kps = True
             else:
                 self.use_2d_kps = False
 
-            if encoder_name == '3D_kpts':
-                self.encoder_3d_kps = Encoder_3D_kpts(freeze_weights=True, load_pretrained = True, device=device, body_detector = body_detector)
+            if '3D_kpts' in encoder_types:
+                self.encoder_3d_kps = Compute_3D_kpts(freeze_weights=True, load_pretrained = True, device=device, body_detector = body_detector)
                 encoder_ouput_channel +=  3 * self.encoder_3d_kps.num_3d_keypoints
                 self.use_3d_kps = True
             else:
@@ -87,7 +97,21 @@ class SLR_network(nn.Module):
             raise ValueError("Please provide decoder types")
         
         decoder_list = ['TransformerDecoder', 'TransformerFull', 'TransformerEncoderCls', 'LSTM']
-
+        
+        dim_feedforward = 512
+        nhead = 3
+        if 'WLASL' in args.dataset_name:
+            pass
+            # nhead = 9
+            # trans_num_layers = 6
+            # dim_feedforward = 2048
+        elif 'AUTSL' in args.dataset_name:
+            nhead = 3
+            # trans_num_layers = 4
+            # dim_feedforward = 512
+        else:
+            raise ValueError("Please provide dataset name")
+            
         for decoder_name in decoder_types:
             assert decoder_name in decoder_list , f"decoder_name should be one of {decoder_list}"
             if decoder_name == 'TransformerDecoder':
@@ -96,7 +120,10 @@ class SLR_network(nn.Module):
                                             encoder_ouput_channel, 
                                             nhead,
                                             num_layers = trans_num_layers,
-                                            device=device)
+                                            dim_feedforward = dim_feedforward,
+                                            device=device,
+                                            args=args,
+                                            )
             
 
             if decoder_name == 'TransformerFull':
@@ -104,14 +131,18 @@ class SLR_network(nn.Module):
                                             n_classes,
                                             encoder_ouput_channel, 
                                             num_layers = trans_num_layers,
-                                            device=device)
+                                            device=device,
+                                            args=args,
+                                            )
 
             if decoder_name == 'TransformerEncoderCls':
                 self.decoder = TransformerEncoderCls(
                                             n_classes,
                                             encoder_ouput_channel, 
                                             num_layers = trans_num_layers,
-                                            device=device)
+                                            device=device,
+                                            args=args,
+                                            )
                 
             if decoder_name == 'LSTM':
                 self.decoder = LSTM_Decoder(encoder_ouput_channel, 
@@ -123,51 +154,51 @@ class SLR_network(nn.Module):
                                             attention=attention,
                                             device=device)
                 
-        self.dropout = nn.Dropout(p=dropout_rate)
 
     def forward(self, x):
-        # print(x.size())  # torch.Size([batch_size, n_frames, 3, 256, 256])
-        # print(f'x min: {x.min()}, max: {x.max()}') #min: 0.0, max: 1.0
-        batch_size, timesteps, C, H, W = x.size() # torch.Size([batch_size, 30, 3, 256, 256])
+        if self.args.load_frame:
+            # print(x.size())  # torch.Size([batch_size, n_frames, 3, 256, 256])
+            # print(f'x min: {x.min()}, max: {x.max()}') #min: 0.0, max: 1.0
+            batch_size, timesteps, C, H, W = x.size() # torch.Size([batch_size, 30, 3, 256, 256])
 
-        x_reshaped = x.view(batch_size * timesteps, C, H, W)
-        # print(f'x_reshaped min: {x_reshaped.min()}, max: {x_reshaped.max()}') #min: 0.0, max: 1.0
-        # resize image to input size
-        if H != self.input_size or W != self.input_size:
-            x_reshaped_resized = F.interpolate(x_reshaped, size=(self.input_size, self.input_size), mode='bilinear')
-        # print(f'x_reshaped_resized min: {x_reshaped_resized.min()}, max: {x_reshaped_resized.max()}') #min: 0.0, max: 1.0
-        # print(x_reshaped_resized.size())  # torch.Size([batch_size*n_frames, 3, 256, 256])
-
-        if self.use_img_feats:
-            # print(latent_var.size())  # torch.Size([120, 512]
-            latent_var = self.encoder(x_reshaped_resized) # torch.Size([120, 512]
-
-            decoder_in = latent_var.view(batch_size, timesteps, -1)
-
-        if self.use_2d_kps:
-            #print('x_reshaped.size()', x_reshaped.size())
-            # Use KeypointRCNN for keypoint detection
-            keypoints_tensor = self.encoder_2d_kps(x_reshaped_resized)  # torch.Size([bs*n_frames, 17, 3])
-            keypoints_tensor = keypoints_tensor.view(batch_size, timesteps, -1)
+            x_reshaped = x.view(batch_size * timesteps, C, H, W)
+            # print(f'x_reshaped min: {x_reshaped.min()}, max: {x_reshaped.max()}') #min: 0.0, max: 1.0
+            # resize image to input size
+            if H != self.input_size or W != self.input_size:
+                x_reshaped_resized = F.interpolate(x_reshaped, size=(self.input_size, self.input_size), mode='bilinear')
+            # print(f'x_reshaped_resized min: {x_reshaped_resized.min()}, max: {x_reshaped_resized.max()}') #min: 0.0, max: 1.0
+            # print(x_reshaped_resized.size())  # torch.Size([batch_size*n_frames, 3, 256, 256])
 
             if self.use_img_feats:
-                decoder_in = torch.cat((decoder_in, keypoints_tensor), dim=2)
-            else:
-                decoder_in = keypoints_tensor
+                # print(latent_var.size())  # torch.Size([120, 512]
+                latent_var = self.encoder(x_reshaped_resized) # torch.Size([120, 512]
 
-        if self.use_3d_kps:
-            joints_3d = self.encoder_3d_kps(x_reshaped, x_reshaped_resized)  # torch.Size([bs, 17, 3])
-            # print('joints_3d.size()', joints_3d.size())  # torch.Size([bs, 17, 3])
-            # plotly_save_point_cloud(joints_3d[0].cpu().numpy())
-            joints_3d = joints_3d.reshape(batch_size, timesteps, -1)
+                decoder_in = latent_var.view(batch_size, timesteps, -1)
 
-            if self.use_img_feats:
-                decoder_in = torch.cat((decoder_in, joints_3d), dim=2)
-            else:
-                decoder_in = joints_3d
+            if self.use_2d_kps:
+                #print('x_reshaped.size()', x_reshaped.size())
+                # Use KeypointRCNN for keypoint detection
+                keypoints_tensor = self.encoder_2d_kps(x_reshaped_resized)  # torch.Size([bs*n_frames, 17, 3])
+                keypoints_tensor = keypoints_tensor.view(batch_size, timesteps, -1)
 
+                if self.use_img_feats:
+                    decoder_in = torch.cat((decoder_in, keypoints_tensor), dim=2)
+                else:
+                    decoder_in = keypoints_tensor
+
+            if self.use_3d_kps:
+                joints_3d = self.encoder_3d_kps(x_reshaped, x_reshaped_resized)  # torch.Size([bs, 17, 3])
+                # print('joints_3d.size()', joints_3d.size())  # torch.Size([bs, 17, 3])
+                # plotly_save_point_cloud(joints_3d[0].cpu().numpy())
+                joints_3d = joints_3d.reshape(batch_size, timesteps, -1)
+
+                if self.use_img_feats:
+                    decoder_in = torch.cat((decoder_in, joints_3d), dim=2)
+                else:
+                    decoder_in = joints_3d
+        else:
+            decoder_in = x
         
-        decoder_in = self.dropout(decoder_in)
         classification, _ = self.decoder(decoder_in)
 
         return classification

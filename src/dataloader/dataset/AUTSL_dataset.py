@@ -31,6 +31,12 @@ import io
 
 import argparse
 
+import sys, os
+sys.path.append('../..')
+
+# sys.path.append(os.path.abspath(os.path.join(os.getcwd, '../..')))
+
+from utils.kpts_trainsform import rotate_keypoints_sequence, scale_keypoints_sequence, translate_keypoints_sequence, add_noise_to_keypoints_sequence
 
 
 
@@ -160,44 +166,59 @@ def extract_frames_by_cv2(vid_path, transforms=None, frames_cap=None, hd_size=72
     
 
 
-
 """
 # Custom Dataset
 """
 
-class Turkish_Dataset(Dataset):
+class AUTSL_Frame_Dataset(Dataset):
     """Custom dataset class for AUTSL Dataset."""
     
-    def __init__(self, df, data_dir, n_classes, file_ext=".mp4", transforms=None, frames_cap=None, hd_size=720):
+    def __init__(self, data_dir = "/scratch/rhong5/dataset/signLanguage/AUTSL/", split = 'train', file_ext=".mp4", 
+                 transforms=None, frames_cap=None, hd_size=720):
         
-        self.df = df
         self.frames_cap = frames_cap
         self.transforms = transforms
         self.file_ext = file_ext
-        self.data_dir = data_dir
-        self.n_classes = n_classes
-        self.num = len(self.df)
         self.hd_size = hd_size
+        self.split = split
 
+        self.video_dir = os.path.join(data_dir, split)
+        
         ### check if the data directory is empty
-        if not os.listdir(data_dir):
-            raise ValueError(f"Data directory '{data_dir}' is empty")
+        if not os.listdir(self.video_dir):
+            raise ValueError(f"Data directory '{self.video_dir}' is empty")
 
         ## check if the data directory has no video files
-        if not any(file.endswith(file_ext) for file in os.listdir(data_dir)):
-            raise ValueError(f"Data directory '{data_dir}' has no video files")
-    
+        if not any(file.endswith(file_ext) for file in os.listdir(self.video_dir)):
+            raise ValueError(f"Data directory '{self.video_dir}' has no video files")
+
+        # All labels
+        filtered_data = "/home/rhong5/research_pro/hand_modeling_pro/signo-lingo/src/data/"
+        self.label_df = pd.read_csv(f'{filtered_data}/{split}.csv', header=None)
+
+        # Total label + turkish to english translation
+
+        total_label = pd.read_csv(f'{filtered_data}/filtered_ClassId.csv')
+        self.n_classes = len(total_label['ClassId'].unique())
+
+        ### Processing test: 3741/3742, /scratch/rhong5/dataset/signLanguage/AUTSL/test/signer30_sample662_color.mp4
+        ### Saving keypoints to /scratch/rhong5/dataset/signLanguage/AUTSL/3D_kpts/test/signer30_sample662_63.npy
+        
+    def __len__(self):
+        return len(self.label_df)
+
+
     def __getitem__(self, index):
 
         while True:            
-            vid_name = self.df.iloc[index, 0]
-            vid_label = self.df.iloc[index, 1]
+            vid_name = self.label_df.iloc[index, 0]
+            vid_label = self.label_df.iloc[index, 1]
             
-            vid_color = f"{self.data_dir}/{vid_name}_color{self.file_ext}"
+            video_filepath = f"{self.video_dir}/{vid_name}_color{self.file_ext}"
 
             # get videos
             # rgb_arr = extract_frames(vid_color, transforms=self.transforms, frames_cap=self.frames_cap)
-            rgb_arr = extract_frames_by_cv2(vid_color, frames_cap=self.frames_cap, hd_size=self.hd_size)
+            rgb_arr = extract_frames_by_cv2(video_filepath, frames_cap=self.frames_cap, hd_size=self.hd_size)
             
             if not rgb_arr is None:
                 break
@@ -221,11 +242,109 @@ class Turkish_Dataset(Dataset):
         
         # return masked video array and label
         return vid_arr, label
-    
+
+
+
+
+
+
+class AUTSL_3D_KPTS_Dataset(Dataset):
+    def __init__(self, data_root_dir = '/scratch/rhong5/dataset/signLanguage/AUTSL', dataset_name = 'AUTSL', 
+                 file_ext = 'npy', split = 'train', transforms=None, frames_cap=60):
+        
+        self.data_root_dir = data_root_dir
+        self.keypoint_dir = os.path.join(data_root_dir, '3D_kpts', split)
+        ### check if the data directory is empty
+        if not os.listdir(self.keypoint_dir):
+            raise ValueError(f"Key point directory '{self.keypoint_dir}' is empty")
+
+        ## check if the data directory has no video files
+        if not any(file.endswith(file_ext) for file in os.listdir(self.keypoint_dir)):
+            raise ValueError(f"Key point directory '{self.keypoint_dir}' has no {file_ext} files")
+
+        self.npy_filenames = [f.split('.')[0] for f in os.listdir(self.keypoint_dir) if f.endswith('.npy')]
+        self.transforms = transforms
+        self.frames_cap = frames_cap
+        anno_csv_file = os.path.join(self.data_root_dir, f'{split}_labels.csv')
+        ## csv file have n rows and 2 columns, first column is video name, second column is class label, get all class labels
+        self.df = pd.read_csv(anno_csv_file, header=None)
+        ## get all class labels
+        self.labels = self.df.iloc[:, 1].unique().tolist()
+        # print(f"1 labels: {self.labels}")
+        # ## convert class labels to a int list
+        # self.labels = [int(label) for label in self.labels]
+        # print(f"2 labels: {self.labels}")
+
+        # sort the int list
+        self.labels.sort() ## from 0 to 225
+        # print(f"3 labels: {self.labels}")
+
+        self.n_classes = len(self.labels)
+        print(f"total unique label: {self.n_classes}")
+
     def __len__(self):
-        return len(self.df)
+        return len(self.npy_filenames)
+
+    def __getitem__(self, idx):
+        kpts_filepath = os.path.join(self.keypoint_dir, self.npy_filenames[idx]+'.npy')
+        keypoint_array = np.load(kpts_filepath)
+
+        keypoint_length = len(keypoint_array)
+        stride = keypoint_length // self.frames_cap
+
+        if keypoint_length < self.frames_cap:
+            # 重复最后一组关键点直到填满 frames_cap
+            repeat_count = self.frames_cap - keypoint_length
+            last_frame_repeats = np.repeat(keypoint_array[-1:], repeat_count, axis=0)
+            keypoint_array = np.concatenate([keypoint_array, last_frame_repeats], axis=0)
+        elif keypoint_length > self.frames_cap:
+            if stride >= 2:
+                # 商大于等于2，进行均匀采样
+                keypoint_array = keypoint_array[::stride][:self.frames_cap]
+            else:
+                # 商小于2，进行随机采样
+                indices = np.random.choice(keypoint_length, self.frames_cap, replace=False)
+                keypoint_array = keypoint_array[np.sort(indices)]
+
+        keypoint_array = scale_keypoints_sequence(keypoint_array)
+        keypoint_array = rotate_keypoints_sequence(keypoint_array)
+        keypoint_array = translate_keypoints_sequence(keypoint_array)
+        keypoint_array = add_noise_to_keypoints_sequence(keypoint_array)
+        
+        
+        label_index = self.npy_filenames[idx].split('_')[-1]
+        label_index = int(label_index)
+
+        label = np.zeros(self.n_classes)
+        label[label_index] = 1
+        label = torch.from_numpy(label).long().argmax()
+
+        keypoint_array = keypoint_array.reshape(self.frames_cap, -1)
+        keypoint_array = torch.from_numpy(keypoint_array).float()
+
+        return keypoint_array, label
+    
 
 
+
+if __name__ == '__main__':
+
+    dataset = AUTSL_3D_KPTS_Dataset(split='train', frames_cap=60)
+    print(len(dataset))
+
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=1)
+    for i, (inputs, labels) in enumerate(dataloader):
+        print(inputs.shape, labels.shape)
+        if i == 0:
+            break
+
+    dataset = AUTSL_Frame_Dataset(split='train', frames_cap=30)
+    print(len(dataset))
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=1)
+    for i, (inputs, labels) in enumerate(dataloader):
+        print(inputs.shape, labels.shape)
+        if i == 0:
+            break
 
 
 '''

@@ -48,7 +48,7 @@ class EarlyStopping:
         else:
             return False
 
-def _train_epoch(epoch, max_epoch, model, criterion, optimizer, dataloader, device, split = 'train', debug=False):
+def train_epoch(epoch, max_epoch, model, criterion, optimizer, dataloader, device, split = 'train', debug=False):
     """Train step within epoch."""
     model.train()
     losses = []
@@ -102,7 +102,7 @@ def _train_epoch(epoch, max_epoch, model, criterion, optimizer, dataloader, devi
 
     return train_loss, train_acc
 
-def _val_epoch(epoch, max_epoch, model, criterion, dataloader, device, split = 'val', debug=False):
+def val_epoch(epoch, max_epoch, model, criterion, dataloader, device, split = 'val', debug=False):
     """Validation step within epoch."""
     model.eval()
     losses = []
@@ -153,121 +153,11 @@ def save_checkpoint(dict_saved, save_dir, is_best = False):
         torch.save(dict_saved, f"{save_dir}/checkpoint.pt")    
 
 
-def trainval(model: nn.Module, 
-          train_loader: DataLoader, 
-          val_loader: DataLoader, 
-          max_epoch:int, 
-          logger,
-          writer,
-          save_weight_dir:str=None, 
-          device:str="cuda", 
-          patience:int=10, 
-          optimizer_lr:int=0.001, 
-          weight_decay:int=0, 
-          use_scheduler:bool=False,
-          resume:str=None,
-          fine_tune:bool=False,
-          debug:bool=False,
-          test_loader: DataLoader=None):
-    """Train function for model."""
-    
-    # if save_dir is specified and does not exist, make save_dir directory
-    if save_weight_dir and not os.path.exists(save_weight_dir):
-        os.mkdir(save_weight_dir)
-    
-    # move model to device specified
-    model.to(device)
-
-    # initialise loss function and optimizers
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=optimizer_lr, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience//3)
-
-    start_epoch = 0
-    best_val_acc = float("-inf")
-    best_epoch = None
-
-    if resume is not None:
-        # load model from checkpoint
-        checkpoint = torch.load(resume)
-        if not fine_tune:
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-            best_val_acc = checkpoint['val_acc']
-            if 'best_epoch' in checkpoint:
-                best_epoch = checkpoint['best_epoch']
-    
-    logger.info("Training Started".center(60, '#'))
-
-    early_stopper = EarlyStopping(patience=patience, logger=logger)
-
-    # start training
-    for epoch in range(start_epoch, max_epoch+1):
-        #logger.info(f"Epoch {epoch}")
-        
-        # train the model
-        train_loss, train_acc = _train_epoch(epoch, max_epoch, model, criterion, optimizer, train_loader, device, debug=debug)
-
-        # write train loss and acc to logger
-        writer.add_scalars('Loss', {'train': train_loss}, epoch)
-        writer.add_scalars('Accuracy', {'train': train_acc}, epoch)
-        logger.info("Average Training Loss of Epoch {}: {:.6f} | Acc: {:.2f}%".format(epoch, train_loss, train_acc*100))
-
-        # validate the model
-        val_loss, val_acc = _val_epoch(epoch, max_epoch, model, criterion, val_loader, device, split='val', debug=debug)
-
-        # write val loss and acc to logger
-        writer.add_scalars('Loss', {'val': val_loss}, epoch)
-        writer.add_scalars('Accuracy', {'val': val_acc}, epoch)
-        logger.info("Average Validation Loss of Epoch {}: {:.6f} | Acc: {:.2f}%".format(epoch, val_loss, val_acc*100))
-
-        
-        # step scheduler
-        if use_scheduler:
-            scheduler.step(val_loss)
-        
-        if not test_loader is None and epoch % 20 == 0:
-            test_loss, test_acc = _val_epoch(epoch, max_epoch, model, criterion, test_loader, device, split='test', debug=debug)
-            logger.info("Average Test Loss of Epoch {}: {:.6f} | Acc: {:.2f}%".format(epoch, test_loss, test_acc*100))
-
-        checkpoint_dict = {
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-            'val_acc': val_acc,
-            'best_epoch': best_epoch
-
-        }
-        # save model or checkpoint
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_epoch = epoch
-            save_checkpoint(checkpoint_dict, save_weight_dir, is_best=True)
-            logger.info("Best Epoch: {} | Validation Loss: {:.6f} | Acc: {:.2f}%".format(best_epoch, val_loss, val_acc*100))
-        else:
-            save_checkpoint(checkpoint_dict, save_weight_dir)
-        
-        # update and check early stopper
-        #if early_stopper.stop(val_loss):
-        #    logger.info("Model has overfit, early stopping...")
-        #    break
-        
-        logger.info("")
-        if debug:
-            break
-        
-    logger.info("Training Finished".center(60, '#'))
-    logger.info("")
-    logger.info("")
-
-    return model
 
 
 
-def test(model: nn.Module, 
+
+def test_runtime(model: nn.Module, 
           data_loader: DataLoader, 
           save_weight_dir:str=None, 
           device:str="cuda",
@@ -286,5 +176,5 @@ def test(model: nn.Module,
     
 
     # test the model
-    test_loss, test_acc = _val_epoch(best_epoch, max_epoch, model, criterion, data_loader, device, split='test', debug=debug)
+    test_loss, test_acc = val_epoch(best_epoch, max_epoch, model, criterion, data_loader, device, split='test', debug=debug)
     return test_loss, test_acc
